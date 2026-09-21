@@ -1,0 +1,11 @@
+quarkus:
+  redisson:
+    single-server-config:
+      address: ${REDIS_URL:redis://localhost:6379}
+      connect-timeout: 1000
+      timeout: 1000
+      retry-attempts: 1
+
+redis-cache:
+  key-prefix: "redis-cache-test:"
+  default-ttl: 1m
