@@ -40,7 +40,7 @@ com.demo.rediscache
     └── impl/CacheServiceImpl         valida argumentos, aplica prefijo y TTL por defecto, delega en el repositorio
 ```
 
-Flujo de una llamada: `CacheService` → `CacheRepository` → `RedisDataSource` (Vert.x) → Redis.
+Flujo de una llamada: `CacheService` → `CacheRepository` → `RedisDataSource` (API bloqueante) → Redis.
 Los microservicios solo usan `CacheService`, `CacheSerializer` y las excepciones.
 
 Todas las implementaciones (`impl`) son `@DefaultBean`: si el microservicio declara su propio bean de
@@ -125,8 +125,9 @@ public class PedidoService {
   Cada operación lanza `CacheConnectionException` y se reintenta la conexión en la siguiente.
 - **Dato ilegible:** `serializer.deserialize` devuelve vacío; se trata como si no estuviera en la cache.
 - **Llaves:** son lógicas (`pedido:123`); en Redis quedan con el prefijo (`pedidos-ms:pedido:123`).
-- **`setIfAbsent`:** se envía `SET key value NX PX ttl` directo (atómico), porque `ValueCommands.set(...)` no
-  informa si guardó y `setnx` no acepta TTL.
+- **`setIfAbsent`:** usa `ValueCommands.setGet(key, value, nx().px(ttl))`, que manda `SET key value NX PX ttl GET` en un
+  solo comando atómico y devuelve el valor anterior (`null` = se guardó). Requiere **Redis 7+** (combinar NX y GET).
+- **Sin reactividad:** toda la librería usa la API bloqueante de `RedisDataSource` (Quarkus imperativo).
 - **`ttl`:** el cliente de Quarkus lanza `RedisKeyNotFoundException` cuando la llave no existe; la librería lo
   traduce a `Optional.empty()`, igual que en la rama Redisson.
 - **Argumentos inválidos:** `IllegalArgumentException`, sin llegar a Redis.

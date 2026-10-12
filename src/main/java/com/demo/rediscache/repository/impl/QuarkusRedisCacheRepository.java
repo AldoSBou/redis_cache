@@ -13,11 +13,7 @@ import io.quarkus.redis.datasource.keys.RedisKeyNotFoundException;
 import io.quarkus.redis.datasource.value.SetArgs;
 import io.quarkus.redis.datasource.value.ValueCommands;
 import io.vertx.core.VertxException;
-import io.vertx.mutiny.redis.client.Command;
-import io.vertx.mutiny.redis.client.Request;
-import io.vertx.mutiny.redis.client.Response;
 import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.io.IOException;
@@ -32,7 +28,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
- * {@link CacheRepository} con el cliente Redis oficial de Quarkus ({@code quarkus-redis-client}, basado en Vert.x).
+ * {@link CacheRepository} con el cliente Redis oficial de Quarkus ({@code quarkus-redis-client}).
+ * Usa solo la API bloqueante ({@link RedisDataSource}): nada reactivo.
  * <p>
  * Los valores se guardan tal cual llegan ({@code byte[]}): el codec de {@code byte[]} de Quarkus no les agrega
  * ningun formato propio, por lo que se leen igual desde cualquier cliente de Redis.
@@ -46,18 +43,12 @@ public class QuarkusRedisCacheRepository implements CacheRepository {
 
     private static final Logger LOG = Logger.getLogger(QuarkusRedisCacheRepository.class);
 
-    private final RedisDataSource ds;
     private final ValueCommands<String, byte[]> values;
     private final KeyCommands<String> keys;
-    /** Mismo timeout que usa la API bloqueante de Quarkus ({@code quarkus.redis.timeout}). */
-    private final Duration timeout;
 
-    public QuarkusRedisCacheRepository(RedisDataSource ds,
-            @ConfigProperty(name = "quarkus.redis.timeout", defaultValue = "10s") Duration timeout) {
-        this.ds = ds;
+    public QuarkusRedisCacheRepository(RedisDataSource ds) {
         this.values = ds.value(byte[].class);
         this.keys = ds.key();
-        this.timeout = timeout;
     }
 
     @Override
@@ -70,18 +61,11 @@ public class QuarkusRedisCacheRepository implements CacheRepository {
 
     @Override
     public boolean setIfAbsent(String key, byte[] value, Duration ttl) {
-        // SET key value NX PX ttl (atomico). ValueCommands.set(..., SetArgs) no dice si guardo o no y setnx()
-        // no acepta TTL, asi que se envia el comando directo: Redis responde OK si guardo y nil si ya existia.
-        return execute(CacheOperation.SET_IF_ABSENT, key, () -> {
-            Request request = Request.cmd(Command.SET)
-                    .arg(key)
-                    .arg(value)
-                    .arg("NX")
-                    .arg("PX")
-                    .arg(ttl.toMillis());
-            Response response = ds.getReactive().getRedis().send(request).await().atMost(timeout);
-            return response != null;
-        });
+        // SET key value NX PX ttl GET (un solo comando, atomico; requiere Redis 7+ para combinar NX y GET).
+        // Devuelve el valor anterior: null significa que la llave no existia y se guardo.
+        // Se usa porque set(..., SetArgs) no dice si guardo o no y setnx() no acepta TTL.
+        return execute(CacheOperation.SET_IF_ABSENT, key,
+                () -> values.setGet(key, value, new SetArgs().nx().px(ttl)) == null);
     }
 
     @Override
@@ -172,7 +156,8 @@ public class QuarkusRedisCacheRepository implements CacheRepository {
     /**
      * Busca en toda la cadena de causas: la API bloqueante envuelve los errores en {@code CompletionException}.
      * Un error de conexion llega como {@code ConnectException}/{@code IOException} o {@code VertxException}
-     * (conexion cerrada); un timeout, como {@code TimeoutException} de Mutiny o de java.util.concurrent.
+     * (conexion cerrada); un timeout ({@code quarkus.redis.timeout}), como {@code io.smallrye.mutiny.TimeoutException}
+     * (es la clase que lanza la API bloqueante de Quarkus: solo se comprueba su tipo, no se usa nada reactivo).
      * Cualquier otra cosa (p. ej. WRONGTYPE) es una respuesta de error de Redis.
      */
     private static boolean esFalloDeConexion(Throwable e) {
