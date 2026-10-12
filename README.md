@@ -1,9 +1,21 @@
-# redis-cache
+# redis-cache (rama `quarkus-redis-client`)
 
-Librería de cache con Redis (Redisson) para microservicios Quarkus (Java 21, Quarkus 3.39).
+Librería de cache con Redis para microservicios Quarkus (Java 21, Quarkus 3.39), usando el cliente
+oficial de Quarkus (`quarkus-redis-client`, basado en Vert.x) en lugar de Redisson.
 
 Da las operaciones sobre Redis y la serialización; **el flujo de cache lo decide cada microservicio**
 en su capa de servicio (buscar en Redis → si no está, ir a la base de datos → guardar en Redis).
+
+## Diferencias con la rama Redisson
+Solo cambian tres cosas; el resto de la librería (API pública, servicio, serializador, tests unitarios) es idéntico.
+
+| | Rama Redisson | Rama quarkus-redis-client |
+|---|---|---|
+| Dependencia | `org.redisson:redisson-quarkus-30` | `io.quarkus:quarkus-redis-client` (viene en el BOM) |
+| Implementación de `CacheRepository` | `RedissonCacheRepository` (`RedissonClient` + `ByteArrayCodec`) | `QuarkusRedisCacheRepository` (`RedisDataSource`, `ValueCommands<String, byte[]>`, `KeyCommands<String>`) |
+| Configuración de conexión | `quarkus.redisson.*` | `quarkus.redis.*` |
+| Imagen nativa | Requiere la config de reflexión que trae `redisson-quarkus-30` | Soportado de fábrica por la extensión |
+| Dev Services | No | Sí: si no se configura `quarkus.redis.hosts`, Quarkus levanta un Redis en Docker en dev/test |
 
 ## Estructura
 ```
@@ -19,7 +31,7 @@ com.demo.rediscache
 │   └── CacheSerializationException   el valor no se pudo convertir a byte[]
 ├── repository
 │   ├── CacheRepository               acceso a Redis con llaves completas
-│   └── impl/RedissonCacheRepository  única clase que conoce Redisson; traduce sus errores a CacheException
+│   └── impl/QuarkusRedisCacheRepository  única clase que conoce el cliente de Quarkus; traduce sus errores a CacheException
 ├── serialization
 │   ├── CacheSerializer               objeto ↔ byte[]
 │   └── impl/JacksonCacheSerializer   JSON UTF-8 con el ObjectMapper de la aplicación
@@ -28,7 +40,7 @@ com.demo.rediscache
     └── impl/CacheServiceImpl         valida argumentos, aplica prefijo y TTL por defecto, delega en el repositorio
 ```
 
-Flujo de una llamada: `CacheService` → `CacheRepository` → Redisson → Redis.
+Flujo de una llamada: `CacheService` → `CacheRepository` → `RedisDataSource` (Vert.x) → Redis.
 Los microservicios solo usan `CacheService`, `CacheSerializer` y las excepciones.
 
 Todas las implementaciones (`impl`) son `@DefaultBean`: si el microservicio declara su propio bean de
@@ -38,8 +50,8 @@ Todas las implementaciones (`impl`) son `@DefaultBean`: si el microservicio decl
 ```bash
 mvn install        # la publica en el repositorio Maven local
 ```
-Para que otros equipos la usen, publicarla en el repositorio corporativo (Nexus/Artifactory) con `mvn deploy`
-agregando el `<distributionManagement>` correspondiente.
+El `pom.xml` genera el índice Jandex (`META-INF/jandex.idx`); sin él, Quarkus no descubre los beans de la
+librería desde el microservicio.
 
 En el microservicio:
 ```xml
@@ -49,25 +61,26 @@ En el microservicio:
     <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
-Trae Redisson (`redisson-quarkus-30`) y `quarkus-jackson` de forma transitiva: no hace falta declararlos.
+Trae `quarkus-redis-client` y `quarkus-jackson` de forma transitiva: no hace falta declararlos.
 
 ## Configuración
 ```yaml
 quarkus:
-  redisson:                      # conexión (ref: https://redisson.pro/docs/configuration/)
-    single-server-config:
-      address: ${REDIS_URL:redis://localhost:6379}
-      timeout: 2000
-      retry-attempts: 1          # pocos reintentos: si Redis cae, el servicio se degrada rápido
+  redis:                         # conexión (ref: https://quarkus.io/guides/redis-reference)
+    hosts: ${REDIS_URL:redis://localhost:6379}
+    timeout: 2s                  # timeout de cada operación (API bloqueante)
+    reconnect-attempts: 0        # sin reintentos: si Redis cae, el servicio se degrada rápido
 
 redis-cache:
   key-prefix: "pedidos-ms:"      # OBLIGATORIO: aísla las llaves de cada microservicio
   default-ttl: 10m               # opcional, TTL de set(key, value) sin TTL explícito
 ```
+Para TLS, password o cluster se usan las mismas propiedades `quarkus.redis.*` del cliente oficial
+(`hosts: rediss://...`, `password`, `client-type: cluster`), sin tocar la librería.
 
 ## Uso
-La librería no conoce el dominio de ningún microservicio: la llave es un `String` con el formato que cada uno
-defina y el valor, cualquier objeto serializable. Ejemplo en un microservicio de pedidos:
+Idéntico a la rama Redisson: la llave es un `String` con el formato que cada microservicio defina y el valor,
+cualquier objeto serializable.
 
 ```java
 @ApplicationScoped
@@ -80,7 +93,6 @@ public class PedidoService {
     public PedidoDto obtener(Long id) {
         String key = "pedido:" + id;
 
-        // 1. Redis
         boolean redisDisponible = true;
         try {
             Optional<PedidoDto> enCache = cache.get(key)
@@ -92,12 +104,10 @@ public class PedidoService {
             redisDisponible = false;     // Redis caído: se sigue con la base de datos
         }
 
-        // 2. Base de datos
         PedidoDto pedido = repository.findByIdOptional(id)
                 .map(PedidoDto::from)
                 .orElseThrow(() -> new NotFoundException("Pedido " + id));
 
-        // 3. Guardar en Redis
         if (redisDisponible) {
             try {
                 cache.set(key, serializer.serialize(key, pedido), Duration.ofMinutes(5));
@@ -109,20 +119,17 @@ public class PedidoService {
     }
 }
 ```
-Para tipos genéricos: `serializer.deserialize(key, data, new TypeReference<List<PedidoDto>>() {})`.
-
-Si parte de la llave viene de una entrada del usuario, conviene validarla en el microservicio: un `*` o `?`
-dentro de la llave la convertiría en un patrón al usarla en `keys` o `deleteByPattern`.
 
 ## Comportamiento
-- **Redis no disponible:** la aplicación arranca igual; el cliente de Redisson se crea en la primera operación.
+- **Redis no disponible:** la aplicación arranca igual; el cliente se conecta en la primera operación.
   Cada operación lanza `CacheConnectionException` y se reintenta la conexión en la siguiente.
-- **Dato ilegible** (p. ej. cambió la estructura del DTO): `serializer.deserialize` devuelve vacío, así que se trata
-  como si no estuviera en la cache y se sobrescribe al guardar.
+- **Dato ilegible:** `serializer.deserialize` devuelve vacío; se trata como si no estuviera en la cache.
 - **Llaves:** son lógicas (`pedido:123`); en Redis quedan con el prefijo (`pedidos-ms:pedido:123`).
-  `keys(...)` y `getAll(...)` devuelven las llaves sin prefijo y solo las de este microservicio.
-- **Argumentos inválidos** (llave nula, valor nulo, TTL ≤ 0, patrón vacío): `IllegalArgumentException`,
-  sin llegar a Redis.
+- **`setIfAbsent`:** se envía `SET key value NX PX ttl` directo (atómico), porque `ValueCommands.set(...)` no
+  informa si guardó y `setnx` no acepta TTL.
+- **`ttl`:** el cliente de Quarkus lanza `RedisKeyNotFoundException` cuando la llave no existe; la librería lo
+  traduce a `Optional.empty()`, igual que en la rama Redisson.
+- **Argumentos inválidos:** `IllegalArgumentException`, sin llegar a Redis.
 
 ## Tests
 ```bash
@@ -134,3 +141,6 @@ mvn test
 | `service/CacheServiceImplTest` | Prefijo, TTL por defecto, validaciones (repositorio mockeado) |
 | `integration/RedisIntegrationTest` | Todas las capas contra un Redis real en `localhost:6379` (se omite si no hay uno) |
 | `integration/RedisNoDisponibleTest` | Sin Redis la app arranca y cada operación lanza `CacheConnectionException` |
+
+`src/test/resources/application.yml` desactiva Dev Services (`quarkus.redis.devservices.enabled: false`) para que
+los tests no intenten levantar un Redis en Docker.

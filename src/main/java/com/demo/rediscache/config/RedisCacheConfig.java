@@ -8,7 +8,7 @@ import java.time.Duration;
 /**
  * Configuracion de la libreria (prefijo {@code redis-cache}).
  * <p>
- * La conexion a Redis se configura aparte, con las propiedades {@code quarkus.redisson.*}.
+ * La conexion a Redis se configura aparte, con las propiedades {@code quarkus.redis.*}.
  */
 @ConfigMapping(prefix = "redis-cache")
 public interface RedisCacheConfig {

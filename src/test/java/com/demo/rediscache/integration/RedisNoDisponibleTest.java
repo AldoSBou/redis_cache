@@ -28,7 +28,7 @@ class RedisNoDisponibleTest {
         @Override
         public Map<String, String> getConfigOverrides() {
             // Puerto donde no hay ningun Redis escuchando
-            return Map.of("quarkus.redisson.single-server-config.address", "redis://localhost:1");
+            return Map.of("quarkus.redis.hosts", "redis://localhost:1");
         }
     }
 
@@ -47,5 +47,12 @@ class RedisNoDisponibleTest {
     void setLanzaCacheConnectionException() {
         assertThrows(CacheConnectionException.class,
                 () -> cache.set("cualquiera", "x".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void setIfAbsentLanzaCacheConnectionException() {
+        assertThrows(CacheConnectionException.class,
+                () -> cache.setIfAbsent("cualquiera", "x".getBytes(StandardCharsets.UTF_8),
+                        java.time.Duration.ofSeconds(5)));
     }
 }

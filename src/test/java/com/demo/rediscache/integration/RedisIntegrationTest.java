@@ -21,8 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Prueba todas las capas juntas (service → repository → Redisson) contra un Redis real en localhost:6379.
- * Se omite automaticamente si no hay Redis levantado.
+ * Prueba todas las capas juntas (service → repository → quarkus-redis-client) contra un Redis real
+ * en localhost:6379. Se omite automaticamente si no hay Redis levantado.
  */
 @QuarkusTest
 @EnabledIf("redisDisponible")

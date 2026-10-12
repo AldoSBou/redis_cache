@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>redis-cache</name>
-    <description>Libreria de cache con Redis (Redisson) para microservicios Quarkus</description>
+    <description>Libreria de cache con Redis (Quarkus Redis Client) para microservicios Quarkus</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
@@ -18,9 +18,9 @@
         <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.version>3.39.4</quarkus.platform.version>
-        <redisson.version>4.7.0</redisson.version>
         <compiler-plugin.version>3.14.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.3</surefire-plugin.version>
+        <jandex-plugin.version>3.3.0</jandex-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -41,16 +41,15 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
-        <!-- ObjectMapper de Quarkus para CacheCodec -->
+        <!-- ObjectMapper de Quarkus para JacksonCacheSerializer -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-jackson</artifactId>
         </dependency>
-        <!-- Cliente Redis: los microservicios lo reciben de forma transitiva -->
+        <!-- Cliente Redis oficial de Quarkus (Vert.x): los microservicios lo reciben de forma transitiva -->
         <dependency>
-            <groupId>org.redisson</groupId>
-            <artifactId>redisson-quarkus-30</artifactId>
-            <version>${redisson.version}</version>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-redis-client</artifactId>
         </dependency>
 
         <!-- Tests -->
@@ -79,6 +78,20 @@
                 <configuration>
                     <parameters>true</parameters>
                 </configuration>
+            </plugin>
+            <!-- Indice Jandex: sin el, Quarkus no descubre los beans de esta libreria desde el microservicio -->
+            <plugin>
+                <groupId>io.smallrye</groupId>
+                <artifactId>jandex-maven-plugin</artifactId>
+                <version>${jandex-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>make-index</id>
+                        <goals>
+                            <goal>jandex</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
