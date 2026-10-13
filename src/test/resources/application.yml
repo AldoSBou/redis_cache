@@ -5,6 +5,13 @@ quarkus:
       connect-timeout: 1000
       timeout: 1000
       retry-attempts: 1
+      # Pool de conexiones (valores chicos: es un entorno de pruebas)
+      connection-minimum-idle-size: 2
+      connection-pool-size: 8
+      subscription-connection-minimum-idle-size: 1
+      subscription-connection-pool-size: 2
+      idle-connection-timeout: 10000
+      ping-connection-interval: 30000
 
 redis-cache:
   key-prefix: "redis-cache-test:"

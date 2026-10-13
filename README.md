@@ -65,6 +65,58 @@ redis-cache:
   default-ttl: 10m               # opcional, TTL de set(key, value) sin TTL explícito
 ```
 
+> Toda la configuración de conexión va bajo un **único** bloque `quarkus:`. Si el `application.yml` ya tiene uno
+> (datasource, http, ...), `redisson:` se agrega dentro de él. Dos bloques `quarkus:` hacen que uno pise al otro y
+> Redisson arranca sin configuración (`MismatchedInputException: No content to map due to end-of-input`).
+
+### Pool de conexiones
+Redisson mantiene su propio pool de conexiones hacia Redis; no hay que crear uno aparte. Se configura en el mismo
+bloque `single-server-config`. Los valores por defecto de Redisson (24 conexiones mínimas, 64 máximas) están pensados
+para una sola aplicación grande; para microservicios con varias réplicas conviene bajarlos:
+
+```yaml
+quarkus:
+  redisson:
+    threads: 4                   # hilos para callbacks de Redisson (defecto 16)
+    netty-threads: 8             # hilos de red de Netty (defecto 32)
+    single-server-config:
+      address: ${REDIS_URL:redis://localhost:6379}
+      password: ${REDIS_PASSWORD:}         # omitir si Redis no tiene auth
+      connect-timeout: 2000
+      timeout: 2000
+      retry-attempts: 1
+      # --- pool de comandos (GET, SET, ...) ---
+      connection-minimum-idle-size: 4      # conexiones abiertas desde el inicio (defecto 24)
+      connection-pool-size: 16             # máximo de conexiones simultáneas (defecto 64)
+      idle-connection-timeout: 10000       # ms; cierra las conexiones ociosas por encima del mínimo
+      # --- pool de pub/sub (la librería no lo usa; se deja al mínimo) ---
+      subscription-connection-minimum-idle-size: 1
+      subscription-connection-pool-size: 2
+      # --- salud de las conexiones ---
+      ping-connection-interval: 30000      # ms; PING periódico, detecta conexiones rotas por firewall/NAT
+      keep-alive: true
+      tcp-no-delay: true
+```
+
+Cómo dimensionarlo:
+
+| Parámetro | Qué controla | Guía |
+|---|---|---|
+| `connection-minimum-idle-size` | Conexiones que se abren al crear el cliente y se mantienen siempre | Operaciones concurrentes típicas del servicio. 2–8 suele bastar para una API REST. |
+| `connection-pool-size` | Tope de conexiones; si se alcanza, las operaciones esperan hasta `timeout` | ≈ 2–4× el mínimo. Si aparecen `RedisTimeoutException` con Redis sano, subir este valor. |
+| `idle-connection-timeout` | Cuánto tarda en cerrar una conexión ociosa que excede el mínimo | 10 s por defecto está bien. |
+| `ping-connection-interval` | Frecuencia del PING de salud | Dejarlo activo (> 0) siempre que haya balanceador o firewall entre el servicio y Redis. |
+| `threads` / `netty-threads` | Hilos de Redisson y Netty | Reducirlos en contenedores con 1–2 CPUs. |
+
+El total de conexiones que recibe Redis es `réplicas × connection-pool-size` (más las de pub/sub), y debe quedar por
+debajo del `maxclients` del servidor (10 000 por defecto en Redis; menor en los planes básicos de servicios
+administrados como Azure Cache for Redis). Ejemplo: 6 réplicas × 16 = 96 conexiones como máximo.
+
+Como el cliente se crea de forma perezosa (ver *Comportamiento*), las `connection-minimum-idle-size` conexiones se
+abren en la primera operación de cache, no al arrancar la aplicación.
+
+Referencia completa de parámetros: https://redisson.pro/docs/configuration/#single-mode
+
 ## Uso
 La librería no conoce el dominio de ningún microservicio: la llave es un `String` con el formato que cada uno
 defina y el valor, cualquier objeto serializable. Ejemplo en un microservicio de pedidos:
