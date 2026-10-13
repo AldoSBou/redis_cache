@@ -3,6 +3,15 @@ quarkus:
     hosts: ${REDIS_URL:redis://localhost:6379}
     timeout: 1s
     reconnect-attempts: 0
+    # Pool de conexiones (valores chicos: es un entorno de pruebas)
+    max-pool-size: 4
+    max-pool-waiting: 8
+    pool-cleaner-interval: 30s
+    pool-recycle-timeout: 1m
+    tcp:
+      connection-timeout: 1s
+      keep-alive: true
+      no-delay: true
     devservices:
       enabled: false        # no levantar un Redis en Docker durante los tests
 

@@ -78,6 +78,50 @@ redis-cache:
 Para TLS, password o cluster se usan las mismas propiedades `quarkus.redis.*` del cliente oficial
 (`hosts: rediss://...`, `password`, `client-type: cluster`), sin tocar la librería.
 
+> Toda la configuración va bajo un **único** bloque `quarkus:`. Si el `application.yml` ya tiene uno (datasource,
+> http, ...), `redis:` se agrega dentro de él; dos bloques `quarkus:` hacen que uno pise al otro.
+
+### Pool de conexiones
+El cliente de Quarkus (Vert.x) mantiene su propio pool; no hay que crear uno aparte. Las conexiones se abren bajo
+demanda hasta `max-pool-size` (no hay un mínimo de conexiones ociosas) y el *cleaner* cierra las que llevan más de
+`pool-recycle-timeout` sin usarse. Como la librería usa la API bloqueante, **cada operación ocupa una conexión mientras
+dura**, así que `max-pool-size` debe cubrir las operaciones de cache simultáneas del servicio.
+
+```yaml
+quarkus:
+  redis:
+    hosts: ${REDIS_URL:redis://localhost:6379}
+    password: ${REDIS_PASSWORD:}         # omitir si Redis no tiene auth
+    timeout: 2s
+    reconnect-attempts: 0
+    # --- pool ---
+    max-pool-size: 16                    # conexiones máximas (defecto 6)
+    max-pool-waiting: 32                 # operaciones en cola cuando el pool está lleno (defecto 24)
+    pool-cleaner-interval: 30s           # cada cuánto se revisan las conexiones ociosas (defecto 30s)
+    pool-recycle-timeout: 3m             # ociosa más de esto → se cierra (defecto 3m)
+    # --- TCP ---
+    tcp:
+      connection-timeout: 2s             # timeout para abrir cada conexión nueva
+      keep-alive: true                   # detecta conexiones rotas por firewall/NAT
+      no-delay: true
+```
+
+Cómo dimensionarlo:
+
+| Parámetro | Qué controla | Guía |
+|---|---|---|
+| `max-pool-size` | Tope de conexiones abiertas | Operaciones de cache concurrentes esperadas. 6 (defecto) alcanza para una API chica; 16–32 para servicios con tráfico. |
+| `max-pool-waiting` | Cuántas operaciones esperan en cola cuando no hay conexión libre | ≈ 2× `max-pool-size`. Si se supera, la operación falla al instante con `ConnectionPoolTooBusyException`, que la librería traduce a `CacheConnectionException`: el servicio sigue con la base de datos. |
+| `timeout` | Tiempo máximo de cada operación bloqueante, incluida la espera por una conexión del pool | 1–2 s. Si aparece con Redis sano, el pool está corto: subir `max-pool-size`. |
+| `pool-recycle-timeout` | Cuánto vive una conexión ociosa | 3 m por defecto está bien; bajar si Redis cierra conexiones inactivas antes (servicios administrados). |
+| `tcp.connection-timeout` | Timeout al abrir una conexión nueva | Igual o menor que `timeout`, para que la operación falle por conexión y no por timeout genérico. |
+
+El total de conexiones que recibe Redis es `réplicas × max-pool-size` y debe quedar por debajo del `maxclients` del
+servidor (10 000 por defecto en Redis; menor en los planes básicos de servicios administrados como Azure Cache for
+Redis). Ejemplo: 6 réplicas × 16 = 96 conexiones como máximo.
+
+Referencia completa: https://quarkus.io/guides/redis-reference#redis-configuration-reference
+
 ## Uso
 Idéntico a la rama Redisson: la llave es un `String` con el formato que cada microservicio defina y el valor,
 cualquier objeto serializable.
